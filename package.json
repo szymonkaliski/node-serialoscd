@@ -5,6 +5,10 @@
     "serialport": "^6.0.4",
     "udp-free-port": "^1.0.0"
   },
+  "preferGlobal": true,
+  "bin": {
+    "serialoscd": "index.js"
+  },
   "name": "node-serialoscd",
   "version": "0.0.1",
   "description": "mext-compatible serialoscd implementation",

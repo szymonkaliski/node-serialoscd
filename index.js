@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 const SerialPort = require("serialport");
 const freeUdpPort = require("udp-free-port");
 const fs = require("fs");
