@@ -6,6 +6,20 @@ const fs = require("fs");
 const program = require("commander");
 const { UdpReceiver, UdpSender } = require("omgosc");
 
+// helpers
+
+const isGoodPort = port => {
+  if (typeof port === "string") {
+    port = parseInt(port);
+
+    if (isNaN(port)) {
+      return false;
+    }
+  }
+
+  return port > 0 && port < 65536;
+};
+
 // init
 
 program
@@ -82,6 +96,10 @@ port.on("open", err => {
       const oscHost = e.params[0];
       const oscPort = e.params[1];
 
+      if (!isGoodPort(oscPort)) {
+        return;
+      }
+
       freeUdpPort((err, sysOscPort) => {
         if (err) throw err;
 
@@ -124,6 +142,10 @@ port.on("open", err => {
 
           // update port if needed
           if (e.path === "/sys/port") {
+            if (!isGoodPort(e.params[0])) {
+              return;
+            }
+
             const newDeviceOscPort = e.params[0];
             const newDeviceSender = new UdpSender(
               connection.oscHost,
