@@ -52,15 +52,15 @@ const HARDWARE_HANDLERS = {
     params[1]
   ],
   "/grid/led/all": params => [params[0] === 0 ? 0x12 : 0x13],
-  "/grid/led/map": params => [0x14, params[0], params[1], params[2]],
-  "/grid/led/row": params => [0x15, params[0], params[1], params[2]],
-  "/grid/led/col": params => [0x16, params[0], params[1], params[2]],
-  "/grid/led/intensity": params => [0x17, params[0]],
-  "/grid/led/level/set": params => [0x18, params[0], params[1], params[2]],
-  "/grid/led/level/all": params => [0x19, params[0]],
-  "/grid/led/level/map": params => [0x1a, params[0], params[1], params[2]],
-  "/grid/led/level/row": params => [0x1b, params[0], params[1], params[2]],
-  "/grid/led/level/col": params => [0x1c, params[0], params[1], params[2]]
+  "/grid/led/map": params => [0x14, ...params],
+  "/grid/led/row": params => [0x15, ...params],
+  "/grid/led/col": params => [0x16, ...params],
+  "/grid/led/intensity": params => [0x17, ...params],
+  "/grid/led/level/set": params => [0x18, ...params],
+  "/grid/led/level/all": params => [0x19, ...params],
+  "/grid/led/level/map": params => [0x1a, ...params],
+  "/grid/led/level/row": params => [0x1b, ...params],
+  "/grid/led/level/col": params => [0x1c, ...params]
 };
 
 // serial
