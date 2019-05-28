@@ -2,7 +2,7 @@
 
 Installation: `npm install -g node-serialoscd`
 
-Usage: `node-serialoscd MONOME_TTY`
+Usage: `serialoscd MONOME_TTY`
 
 Options:
 
