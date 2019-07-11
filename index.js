@@ -38,6 +38,10 @@ if (!program.args.length) {
 const log = program.debug ? console.log : () => {};
 const stringify = json => JSON.stringify(json, null, 2);
 
+// osc connections
+
+const connections = {};
+
 // consts
 
 const BAUD_RATE = 115200;
@@ -45,7 +49,10 @@ const MASTER_RECEIVER_PORT = 12002;
 const DEVICE = "monome";
 const DEFAULT_PREFIX = `/${DEVICE}`;
 
-const HARDWARE_HANDLERS = {
+let sysId = "monome";
+let size = undefined;
+
+const OSC_TO_HARDWARE = {
   "/grid/led/set": params => [
     params[2] === 0 ? 0x10 : 0x11,
     params[0],
@@ -63,10 +70,43 @@ const HARDWARE_HANDLERS = {
   "/grid/led/level/col": params => [0x1c, ...params]
 };
 
+const createKeyMessageHandler = type => msg => {
+  const x = parseInt(msg.substring(2, 4), 16);
+  const y = parseInt(msg.substring(4, 6), 16);
+
+  log(">>> key");
+  log(stringify([x, y, type]));
+  log();
+
+  // notify all conections
+  Object.keys(connections).forEach(key => {
+    const { deviceSender, prefix } = connections[key];
+
+    deviceSender.send(`${prefix}/grid/key`, "iii", [x, y, type]);
+  });
+};
+
+const HARDWARE_MESSAGE_HANDLERS = {
+  "0x01": msg => {
+    // FIXME: this never returns anything for me
+  },
+  "0x03": msg => {
+    const x = parseInt(msg.substring(2, 4), 16);
+    const y = parseInt(msg.substring(4, 6), 16);
+    size = [x, y];
+  },
+  "0x20": createKeyMessageHandler(0),
+  "0x21": createKeyMessageHandler(1)
+};
+
+const INIT_MESSAGES = [
+  [0x01], // sysId
+  [0x05] // size
+];
+
 // serial
 
 const ttyFile = program.args[0];
-const sysId = ttyFile.split("/")[2].replace(/(tty|cu)./, "");
 
 if (!fs.existsSync(ttyFile)) {
   console.log(`${ttyFile} doesn't exist`);
@@ -79,12 +119,13 @@ const port = new SerialPort(ttyFile, { baudRate: BAUD_RATE });
 // osc
 
 const masterReceiver = new UdpReceiver(MASTER_RECEIVER_PORT);
-let connections = {};
 
 port.on("open", err => {
   if (err) throw err;
 
   console.log("ready!");
+
+  INIT_MESSAGES.forEach(msg => port.write(Buffer.from(msg)));
 
   masterReceiver.on("", e => {
     log(">>> master");
@@ -187,27 +228,15 @@ port.on("open", err => {
           // dump all the values we have
           if (e.path === "/sys/info") {
             const sysMessages = [
-              { path: "/sys/id", typetag: "s", params: [sysId] },
-              { path: "/sys/size", typetag: "ii", params: [8, 8] },
-              {
-                path: "/sys/host",
-                typetag: "s",
-                params: [connection.deviceOscHost]
-              },
-              {
-                path: "/sys/port",
-                typetag: "i",
-                params: [connection.deviceOscPort]
-              },
-              {
-                path: "/sys/prefix",
-                typetag: "s",
-                params: [connection.prefix]
-              },
-              { path: "/sys/rotation", typetag: "i", params: [0] }
+              ["/sys/id", "s", [sysId]],
+              ["/sys/size", "ii", size || [8, 8]],
+              ["/sys/host", "s", [connection.deviceOscHost]],
+              ["/sys/port", "i", [connection.deviceOscPort]],
+              ["/sys/prefix", "s", [connection.prefix]],
+              ["/sys/rotation", "i", [0]]
             ];
 
-            sysMessages.forEach(({ path, typetag, params }) => {
+            sysMessages.forEach(([path, typetag, params]) => {
               connection.deviceSender.send(path, typetag, params);
             });
 
@@ -218,9 +247,9 @@ port.on("open", err => {
 
           const pathWithoutPrefix = e.path.replace(connection.prefix, "");
 
-          if (HARDWARE_HANDLERS[pathWithoutPrefix]) {
+          if (OSC_TO_HARDWARE[pathWithoutPrefix]) {
             const buffer = Buffer.from(
-              HARDWARE_HANDLERS[pathWithoutPrefix](e.params)
+              OSC_TO_HARDWARE[pathWithoutPrefix](e.params)
             );
 
             // send hardware data to monome
@@ -236,26 +265,16 @@ port.on("open", err => {
 
 // key events from monome
 
-port.on("data", d => {
-  const hex = d.toString("hex");
-  if (hex.length !== 6) return;
+port.on("data", data => {
+  const hex = data.toString("hex");
 
-  const msg = hex.substring(0, 2);
-  const x = hex.substring(2, 4);
-  const y = hex.substring(4, 6);
+  if (hex.length !== 6) {
+    return;
+  }
 
-  log(">>> key");
-  log(stringify({ msg, x, y }));
-  log();
+  const msgType = `0x${hex.substring(0, 2)}`;
 
-  // notify all conections
-  Object.keys(connections).forEach(key => {
-    const { deviceSender, prefix } = connections[key];
-
-    deviceSender.send(`${prefix}/grid/key`, "iii", [
-      parseInt(x),
-      parseInt(y),
-      msg === "20" ? 0 : 1
-    ]);
-  });
+  if (HARDWARE_MESSAGE_HANDLERS[msgType]) {
+    HARDWARE_MESSAGE_HANDLERS[msgType](hex);
+  }
 });
