@@ -44,6 +44,9 @@ const connections = {};
 
 // consts
 
+const BRICK_PROTECTION_WRITE = 10;
+let lastWriteTime = Date.now();
+
 const BAUD_RATE = 115200;
 const MASTER_RECEIVER_PORT = 12002;
 const DEVICE = "monome";
@@ -75,7 +78,7 @@ const createKeyMessageHandler = type => msg => {
   const y = parseInt(msg.substring(4, 6), 16);
 
   log(">>> key");
-  log(stringify([x, y, type]));
+  log(x, y, type);
   log();
 
   // notify all conections
@@ -253,7 +256,14 @@ port.on("open", err => {
             );
 
             // send hardware data to monome
-            port.write(buffer);
+            if (Date.now() - lastWriteTime > BRICK_PROTECTION_WRITE) {
+              log(">>> writing");
+              log(buffer);
+              log();
+
+              port.write(buffer);
+              lastWriteTime = Date.now();
+            }
 
             return;
           }
