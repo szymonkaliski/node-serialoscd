@@ -20,12 +20,24 @@ const isGoodPort = port => {
   return port > 0 && port < 65536;
 };
 
+const packNybbles = data => {
+  const out = [];
+
+  for (let i = 0; i < data.length; i += 2) {
+    out.push((data[i] << 4) | (data[i + 1] & 0x0f));
+  }
+
+  return out;
+};
+
 // init
 
 program
   .version(require("./package.json").version)
   .usage("node-serialoscd MONOME_TTY")
   .option("-d, --debug", "show debugging information")
+  .option("-b, --baud <baudrate>", "specify baud rate (defaults to 115200)")
+  .option("-o, --osc <port>", "specify OSC port (defaults to 12002)")
   .parse(process.argv);
 
 if (!program.args.length) {
@@ -44,11 +56,8 @@ const connections = {};
 
 // consts
 
-const BRICK_PROTECTION_WRITE = 10;
-let lastWriteTime = Date.now();
-
-const BAUD_RATE = 115200;
-const MASTER_RECEIVER_PORT = 12002;
+const BAUD_RATE = program.baud ? parseInt(program.baud) : 115200;
+const MASTER_RECEIVER_PORT = program.osc ? parseInt(program.osc) : 12002;
 const DEVICE = "monome";
 const DEFAULT_PREFIX = `/${DEVICE}`;
 
@@ -68,9 +77,24 @@ const OSC_TO_HARDWARE = {
   "/grid/led/intensity": params => [0x17, ...params],
   "/grid/led/level/set": params => [0x18, ...params],
   "/grid/led/level/all": params => [0x19, ...params],
-  "/grid/led/level/map": params => [0x1a, ...params],
-  "/grid/led/level/row": params => [0x1b, ...params],
-  "/grid/led/level/col": params => [0x1c, ...params]
+  "/grid/led/level/map": params => [
+    0x1a,
+    params[0],
+    params[1],
+    ...packNybbles(params.slice(2))
+  ],
+  "/grid/led/level/row": params => [
+    0x1b,
+    params[0],
+    params[1],
+    ...packNybbles(params.slice(2))
+  ],
+  "/grid/led/level/col": params => [
+    0x1c,
+    params[0],
+    params[1],
+    ...packNybbles(params.slice(2))
+  ]
 };
 
 const createKeyMessageHandler = type => msg => {
@@ -90,12 +114,13 @@ const createKeyMessageHandler = type => msg => {
 };
 
 const HARDWARE_MESSAGE_HANDLERS = {
-  "0x01": msg => {
-    // FIXME: this never returns anything for me
+  "0x01": (_, raw) => {
+    sysId = raw.slice(1).toString("ascii");
   },
   "0x03": msg => {
     const x = parseInt(msg.substring(2, 4), 16);
     const y = parseInt(msg.substring(4, 6), 16);
+
     size = [x, y];
   },
   "0x20": createKeyMessageHandler(0),
@@ -176,7 +201,8 @@ port.on("open", err => {
         const connection = connections[oscAddress];
 
         // notify listener about our device
-        sysSender.send("/serialosc/device", "ssi", [sysId, DEVICE, sysOscPort]);
+        // sysSender.send("/serialosc/device", "ssi", [sysId, DEVICE, sysOscPort]);
+        sysSender.send("/serialosc/device", "ssi", [DEVICE, DEVICE, sysOscPort]);
 
         // listen to sys messages
         receiver.on("", e => {
@@ -231,7 +257,7 @@ port.on("open", err => {
           // dump all the values we have
           if (e.path === "/sys/info") {
             const sysMessages = [
-              ["/sys/id", "s", [sysId]],
+              ["/sys/id", "s", [DEVICE]],
               ["/sys/size", "ii", size || [8, 8]],
               ["/sys/host", "s", [connection.deviceOscHost]],
               ["/sys/port", "i", [connection.deviceOscPort]],
@@ -255,15 +281,7 @@ port.on("open", err => {
               OSC_TO_HARDWARE[pathWithoutPrefix](e.params)
             );
 
-            // send hardware data to monome
-            if (Date.now() - lastWriteTime > BRICK_PROTECTION_WRITE) {
-              log(">>> writing");
-              log(buffer);
-              log();
-
-              port.write(buffer);
-              lastWriteTime = Date.now();
-            }
+            port.write(buffer);
 
             return;
           }
@@ -273,18 +291,14 @@ port.on("open", err => {
   });
 });
 
-// key events from monome
+// handle events from monome
 
 port.on("data", data => {
   const hex = data.toString("hex");
 
-  if (hex.length !== 6) {
-    return;
-  }
-
   const msgType = `0x${hex.substring(0, 2)}`;
 
   if (HARDWARE_MESSAGE_HANDLERS[msgType]) {
-    HARDWARE_MESSAGE_HANDLERS[msgType](hex);
+    HARDWARE_MESSAGE_HANDLERS[msgType](hex, data);
   }
 });
