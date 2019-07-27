@@ -38,6 +38,11 @@ program
   .option("-d, --debug", "show debugging information")
   .option("-b, --baud <baudrate>", "specify baud rate (defaults to 115200)")
   .option("-o, --osc <port>", "specify OSC port (defaults to 12002)")
+  .option("-ao, --apposc <port>", "specify application OSC port (no default)")
+  .option(
+    "-s, --size <16x8>",
+    "specify Monome size (requests from device by default)"
+  )
   .parse(process.argv);
 
 if (!program.args.length) {
@@ -62,7 +67,9 @@ const DEVICE = "monome";
 const DEFAULT_PREFIX = `/${DEVICE}`;
 
 let sysId = "monome";
-let size = undefined;
+let size = program.size
+  ? program.size.split("x").map(n => parseInt(n))
+  : undefined;
 
 const OSC_TO_HARDWARE = {
   "/grid/led/set": params => [
@@ -102,13 +109,12 @@ const createKeyMessageHandler = type => msg => {
   const y = parseInt(msg.substring(4, 6), 16);
 
   log(">>> key");
-  log(x, y, type);
+  log(`${x}:${y} (${type})`);
   log();
 
   // notify all conections
   Object.keys(connections).forEach(key => {
     const { deviceSender, prefix } = connections[key];
-
     deviceSender.send(`${prefix}/grid/key`, "iii", [x, y, type]);
   });
 };
@@ -116,12 +122,22 @@ const createKeyMessageHandler = type => msg => {
 const HARDWARE_MESSAGE_HANDLERS = {
   "0x01": (_, raw) => {
     sysId = raw.slice(1).toString("ascii");
+
+    log(">>> sys id");
+    log(sysId);
+    log();
   },
   "0x03": msg => {
-    const x = parseInt(msg.substring(2, 4), 16);
-    const y = parseInt(msg.substring(4, 6), 16);
+    if (!size) {
+      const x = parseInt(msg.substring(2, 4), 16);
+      const y = parseInt(msg.substring(4, 6), 16);
 
-    size = [x, y];
+      size = [x, y];
+    }
+
+    log(">>> size");
+    log(`${size[0]}x${size[1]}`);
+    log();
   },
   "0x20": createKeyMessageHandler(0),
   "0x21": createKeyMessageHandler(1)
@@ -148,12 +164,153 @@ const port = new SerialPort(ttyFile, { baudRate: BAUD_RATE });
 
 const masterReceiver = new UdpReceiver(MASTER_RECEIVER_PORT);
 
+const createConnection = (
+  oscHost = "127.0.0.1",
+  oscPort = 0,
+  sysOscPort = 0
+) => {
+  const oscAddress = `${oscHost}:${oscPort}`;
+
+  log(">>> starting connection");
+  log(`oscAddress: ${oscAddress}`);
+  log(`port: ${sysOscPort}`);
+  log();
+
+  // re-use existing values
+  const deviceOscHost = connections[oscAddress]
+    ? connections[oscAddress].deviceOscHost
+    : oscHost;
+
+  const deviceOscPort = connections[oscAddress]
+    ? connections[oscAddress].deviceOscPort
+    : oscPort;
+
+  // create communication channels
+  const receiver = new UdpReceiver(sysOscPort);
+  const sysSender = new UdpSender(oscHost, oscPort);
+  const deviceSender = new UdpSender(deviceOscHost, deviceOscPort);
+
+  // store the connection
+  connections[oscAddress] = {
+    prefix: DEFAULT_PREFIX,
+    sysSender,
+    deviceSender,
+    receiver,
+    sysOscPort,
+    deviceOscHost,
+    deviceOscPort
+  };
+  const connection = connections[oscAddress];
+
+  // notify listener about our device
+  // TODO: use sysId here?
+  sysSender.send("/serialosc/device", "ssi", [DEVICE, DEVICE, sysOscPort]);
+
+  // listen to sys messages
+  receiver.on("", e => {
+    log(">>> receiver");
+    log(stringify(e));
+    log();
+
+    // update port if needed
+    if (e.path === "/sys/port") {
+      if (!isGoodPort(e.params[0])) {
+        return;
+      }
+
+      const newDeviceOscPort = e.params[0];
+      const newDeviceSender = new UdpSender(
+        connection.oscHost,
+        newDeviceOscPort
+      );
+
+      connection.deviceSender.close();
+      connection.deviceSender = newDeviceSender;
+      connection.deviceOscPort = newDeviceOscPort;
+
+      newDeviceSender.send("/sys/port", "i", [newDeviceOscPort]);
+
+      return;
+    }
+
+    // update host if needed
+    if (e.path === "/sys/host") {
+      const newDeviceOscHost = e.params[0];
+      const newDeviceSender = new UdpSender(
+        newDeviceOscHost,
+        connection.deviceOscPort
+      );
+
+      connection.deviceSender.close();
+      connection.deviceSender = newDeviceSender;
+      connection.deviceOscHost = newDeviceOscHost;
+
+      newDeviceSender.send("/sys/host", "i", [newDeviceOscHost]);
+
+      return;
+    }
+
+    if (e.path === "/sys/prefix") {
+      connection.prefix = e.params[0];
+
+      return;
+    }
+
+    // dump all the values we have
+    if (e.path === "/sys/info") {
+      const sysMessages = [
+        ["/sys/id", "s", [DEVICE]],
+        ["/sys/size", "ii", size || [8, 8]],
+        ["/sys/host", "s", [connection.deviceOscHost]],
+        ["/sys/port", "i", [connection.deviceOscPort]],
+        ["/sys/prefix", "s", [connection.prefix]],
+        ["/sys/rotation", "i", [0]]
+      ];
+
+      sysMessages.forEach(([path, typetag, params]) => {
+        connection.deviceSender.send(path, typetag, params);
+      });
+
+      return;
+    }
+
+    // otherwise handle hardware communications
+
+    const pathWithoutPrefix = e.path.replace(connection.prefix, "");
+
+    if (OSC_TO_HARDWARE[pathWithoutPrefix]) {
+      const buffer = Buffer.from(OSC_TO_HARDWARE[pathWithoutPrefix](e.params));
+
+      port.write(buffer, e => {
+        if (e) {
+          console.error(e);
+        }
+      });
+
+      return;
+    } else {
+      console.error("unhandled message", e.path, e.params);
+    }
+  });
+};
+
+if (program.apposc) {
+  const oscPort = parseInt(program.apposc);
+  createConnection("127.0.0.1", oscPort, oscPort);
+}
+
 port.on("open", err => {
   if (err) throw err;
 
   console.log("ready!");
 
-  INIT_MESSAGES.forEach(msg => port.write(Buffer.from(msg)));
+  INIT_MESSAGES.forEach(msg =>
+    port.write(Buffer.from(msg), e => {
+      if (e) {
+        console.error(e);
+      }
+    })
+  );
 
   masterReceiver.on("", e => {
     log(">>> master");
@@ -169,123 +326,12 @@ port.on("open", err => {
         return;
       }
 
-      freeUdpPort((err, sysOscPort) => {
-        if (err) throw err;
+      freeUdpPort((e, sysOscPort) => {
+        if (e) {
+          console.error(e);
+        }
 
-        const oscAddress = `${oscHost}:${oscPort}`;
-
-        // re-use existing values
-        const deviceOscHost = connections[oscAddress]
-          ? connections[oscAddress].deviceOscHost
-          : oscHost;
-
-        const deviceOscPort = connections[oscAddress]
-          ? connections[oscAddress].deviceOscPort
-          : oscPort;
-
-        // create communication channels
-        const receiver = new UdpReceiver(sysOscPort);
-        const sysSender = new UdpSender(oscHost, oscPort);
-        const deviceSender = new UdpSender(deviceOscHost, deviceOscPort);
-
-        // store the connection
-        connections[oscAddress] = {
-          prefix: DEFAULT_PREFIX,
-          sysSender,
-          deviceSender,
-          receiver,
-          sysOscPort,
-          deviceOscHost,
-          deviceOscPort
-        };
-        const connection = connections[oscAddress];
-
-        // notify listener about our device
-        // sysSender.send("/serialosc/device", "ssi", [sysId, DEVICE, sysOscPort]);
-        sysSender.send("/serialosc/device", "ssi", [DEVICE, DEVICE, sysOscPort]);
-
-        // listen to sys messages
-        receiver.on("", e => {
-          log(">>> receiver");
-          log(stringify(e));
-          log();
-
-          // update port if needed
-          if (e.path === "/sys/port") {
-            if (!isGoodPort(e.params[0])) {
-              return;
-            }
-
-            const newDeviceOscPort = e.params[0];
-            const newDeviceSender = new UdpSender(
-              connection.oscHost,
-              newDeviceOscPort
-            );
-
-            connection.deviceSender.close();
-            connection.deviceSender = newDeviceSender;
-            connection.deviceOscPort = newDeviceOscPort;
-
-            newDeviceSender.send("/sys/port", "i", [newDeviceOscPort]);
-
-            return;
-          }
-
-          // update host if needed
-          if (e.path === "/sys/host") {
-            const newDeviceOscHost = e.params[0];
-            const newDeviceSender = new UdpSender(
-              newDeviceOscHost,
-              connection.deviceOscPort
-            );
-
-            connection.deviceSender.close();
-            connection.deviceSender = newDeviceSender;
-            connection.deviceOscHost = newDeviceOscHost;
-
-            newDeviceSender.send("/sys/host", "i", [newDeviceOscHost]);
-
-            return;
-          }
-
-          if (e.path === "/sys/prefix") {
-            connection.prefix = e.params[0];
-
-            return;
-          }
-
-          // dump all the values we have
-          if (e.path === "/sys/info") {
-            const sysMessages = [
-              ["/sys/id", "s", [DEVICE]],
-              ["/sys/size", "ii", size || [8, 8]],
-              ["/sys/host", "s", [connection.deviceOscHost]],
-              ["/sys/port", "i", [connection.deviceOscPort]],
-              ["/sys/prefix", "s", [connection.prefix]],
-              ["/sys/rotation", "i", [0]]
-            ];
-
-            sysMessages.forEach(([path, typetag, params]) => {
-              connection.deviceSender.send(path, typetag, params);
-            });
-
-            return;
-          }
-
-          // otherwise handle hardware communications
-
-          const pathWithoutPrefix = e.path.replace(connection.prefix, "");
-
-          if (OSC_TO_HARDWARE[pathWithoutPrefix]) {
-            const buffer = Buffer.from(
-              OSC_TO_HARDWARE[pathWithoutPrefix](e.params)
-            );
-
-            port.write(buffer);
-
-            return;
-          }
-        });
+        createConnection(oscHost, oscPort, sysOscPort);
       });
     }
   });

@@ -1,8 +1,8 @@
 {
   "dependencies": {
-    "commander": "^2.13.0",
+    "commander": "^2.20.0",
     "omgosc": "^1.0.0",
-    "serialport": "^6.0.4",
+    "serialport": "^7.1.5",
     "udp-free-port": "^1.0.0"
   },
   "preferGlobal": true,
