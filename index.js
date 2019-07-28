@@ -105,6 +105,10 @@ const OSC_TO_HARDWARE = {
 };
 
 const createKeyMessageHandler = type => msg => {
+  if (msg.length < 6) {
+    return;
+  }
+
   const x = parseInt(msg.substring(2, 4), 16);
   const y = parseInt(msg.substring(4, 6), 16);
 
